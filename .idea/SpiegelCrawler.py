@@ -6,9 +6,12 @@ import logging
 import sys
 from datetime import datetime
 from collections import Counter
+import threading
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, filedialog
+from tkinter import ttk
 import os
+import queue
 
 # Konfiguriere Logging mit Datum und Uhrzeit im Dateinamen
 log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_erstellt.log")
@@ -16,18 +19,25 @@ logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime
 
 # Schlüsselwörter für die Artikelsuche - einfach erweiterbar
 keywords = [
-    "elektromobilität",
+    "elektroauto",
+    "elektroautos",
     "e-auto",
     "e-autos",
-    "tesla",
-    "ladesäulen",
-    "ladeinfrastruktur",
-    "bmw i",
-    "audi e",
-    "mercedes eq",
-    "vw id",
-    "renault zoe",
-    "nissan leaf"
+    "elektromobilität",
+    "e-mobilität",
+    "elektrofahrzeug",
+    "elektrofahrzeuge",
+    "elektroantrieb",
+    "e-motor",
+    "batterieauto",
+    "batterieautos",
+    "Autos emissionsfrei",
+    "E-Autos emissionsfrei",
+    "Autos null-emissionen",
+    "elektrisches fahrzeug",
+    "e-fahrzeug",
+    "e-fahrzeuge",
+    "elektromobil",
 ]
 
 # Listen mit positiven und negativen Ausdrücken - einfach erweiterbar
@@ -39,6 +49,15 @@ positive_words = [
     "effizient",
     "zukunftsweisend",
     "nachhaltig"
+    "komfortable"
+    "postive entwicklung"
+    "steigende Zahlen"
+    "Elektroautos günstiger"
+    "E-Autos günstiger"
+    "Recyclinganlage eröffnet"
+    "Nachfrage wächst"
+    "kaum Gefahr"
+    "weiter"
 ]
 
 negative_words = [
@@ -49,7 +68,17 @@ negative_words = [
     "negativ",
     "ineffizient",
     "mangelhaft"
+    "gefährlich"
+    "unmenschlich"
+    "Brand"
+    "E-Debakel"
+    "E-Auto brennt"
+    "Totalschäden"
+
 ]
+
+# Queue für Thread-Kommunikation
+gui_queue = queue.Queue()
 
 # 1. Webcrawler zum Abrufen von Artikeln zu E-Autos
 class SpiegelCrawler:
@@ -60,6 +89,8 @@ class SpiegelCrawler:
         self.start_date = datetime.strptime(start_date, "%Y-%m-%d")
         self.end_date = datetime.strptime(end_date, "%Y-%m-%d")
         self.article_urls = []
+        # Logge die Konfiguration
+        logging.info(f"Konfiguration: max_articles={max_articles}, max_pages={max_pages}, start_date={start_date}, end_date={end_date}")
 
     def find_e_auto_articles(self):
         page_number = 1
@@ -87,6 +118,11 @@ class SpiegelCrawler:
                                     date_string = date_strings[0]
                                     try:
                                         article_date = datetime.strptime(date_string.strip().split(',')[0], "%d.%m.%Y")
+                                        # Abbruch, wenn das Datum unter dem Startdatum liegt
+                                        if article_date < self.start_date:
+                                            logging.info("Artikel liegt vor dem Startdatum. Prozess wird abgebrochen.")
+                                            gui_queue.put({'type': 'status', 'text': 'Crawler abgeschlossen.'})
+                                            return
                                         if self.start_date <= article_date <= self.end_date:
                                             self.article_urls.append(full_url)
                                             logging.info(f"Gefundener Artikel: {full_url.split('/auto/')[-1]}")
@@ -94,22 +130,23 @@ class SpiegelCrawler:
                                         continue
                     elapsed_time = time.time() - start_time
                     progress = len(self.article_urls) / self.max_articles * 100
-                    sys.stdout.write(f"\rCrawler arbeitet... {progress:.2f}% abgeschlossen, Laufzeit: {elapsed_time:.2f} Sekunden")
-                    sys.stdout.flush()
+                    # Aktualisiere Fortschrittsanzeige im GUI
+                    gui_queue.put({'type': 'progress', 'progress': progress, 'text': f"Crawler arbeitet... {progress:.2f}% abgeschlossen"})
                     if not links:
                         break
                 else:
-                    print(f"\nFehler beim Abrufen der Seite: {response.status_code}")
+                    logging.error(f"Fehler beim Abrufen der Seite: {response.status_code}")
                 page_number += 1
             except requests.exceptions.RequestException as e:
-                print(f"\nFehler beim Verbinden mit der URL {url}: {e}")
+                logging.error(f"Fehler beim Verbinden mit der URL {url}: {e}")
                 break
 
         if len(self.article_urls) >= self.max_articles or page_number > self.max_pages:
-            print("\nVorgang erfolgreich abgeschlossen.")
             logging.info("Vorgang erfolgreich abgeschlossen.")
+            gui_queue.put({'type': 'progress', 'progress': 100, 'text': 'Crawler abgeschlossen.'})
 
     def open_articles(self):
+        gui_queue.put({'type': 'status', 'text': 'Sentimentanalyse wird durchgeführt...'})
         sentiment_results = []
         total_positive_count = 0
         total_negative_count = 0
@@ -118,8 +155,13 @@ class SpiegelCrawler:
                 response = requests.get(url, timeout=10)
                 if response.status_code == 200:
                     soup = BeautifulSoup(response.text, 'html.parser')
-                    title = soup.find('h2').text.strip() if soup.find('h2') else 'Kein Titel'
-                    body = " ".join([p.text for p in soup.find_all('p')])
+                    title_tag = soup.find('h2')
+                    if title_tag:
+                        title = title_tag.get_text(separator=' ', strip=True)
+                        title = ' '.join(title.split())
+                    else:
+                        title = 'Kein Titel'
+                    body = " ".join([p.get_text(separator=' ', strip=True) for p in soup.find_all('p')])
                     positive_count = sum(body.lower().count(word) for word in positive_words)
                     negative_count = sum(body.lower().count(word) for word in negative_words)
                     total_positive_count += positive_count
@@ -133,25 +175,24 @@ class SpiegelCrawler:
                         "sentiment": sentiment
                     })
                 else:
-                    print(f"\nFehler beim Abrufen des Artikels: {response.status_code}")
+                    logging.error(f"Fehler beim Abrufen des Artikels: {response.status_code}")
             except requests.exceptions.RequestException as e:
-                print(f"\nFehler beim Verbinden mit der URL {url}: {e}")
+                logging.error(f"Fehler beim Verbinden mit der URL {url}: {e}")
 
         # Ergebnisse der Sentimentanalyse ausgeben und ins Log schreiben
         for result in sentiment_results:
             output = f"Titel: {result['title']}\nURL: {result['url']}\nPositiv: {result['positive_count']}, Negativ: {result['negative_count']}, Sentiment: {result['sentiment']}\n"
-            print(output)
             logging.info(output)
-            results_text.insert(tk.END, output + "\n")
+            gui_queue.put({'type': 'sentiment', 'text': output})
 
         # Gesamtergebnisse der Sentimentanalyse
         overall_sentiment = "positiv" if total_positive_count > total_negative_count else ("negativ" if total_negative_count > total_positive_count else "neutral")
         overall_output = f"\nGesamtanzahl positive Wörter: {total_positive_count}\nGesamtanzahl negative Wörter: {total_negative_count}\nGesamtsentiment: {overall_sentiment}\n"
-        print(overall_output)
         logging.info(overall_output)
-        results_text.insert(tk.END, overall_output + "\n")
+        gui_queue.put({'type': 'sentiment', 'text': overall_output})
+        gui_queue.put({'type': 'status', 'text': 'Vorgang abgeschlossen.'})
 
-# Hauptprogramm mit GUI-Frontend
+# Hauptprogramm mit modernisiertem GUI-Frontend
 def start_crawler():
     max_articles = max_articles_entry.get()
     max_pages = max_pages_entry.get()
@@ -159,8 +200,8 @@ def start_crawler():
     end_date = end_date_entry.get()
 
     try:
-        max_articles = int(max_articles)
-        max_pages = int(max_pages)
+        max_articles_int = int(max_articles)
+        max_pages_int = int(max_pages)
         # Prüfen, ob die Eingaben gültig sind
         datetime.strptime(start_date, "%Y-%m-%d")
         datetime.strptime(end_date, "%Y-%m-%d")
@@ -168,10 +209,40 @@ def start_crawler():
         messagebox.showerror("Eingabefehler", "Bitte geben Sie gültige Werte ein. Datum im Format YYYY-MM-DD.")
         return
 
-    # Initialisiere Webcrawler
-    crawler = SpiegelCrawler(base_url="https://www.spiegel.de/auto/", max_articles=max_articles, max_pages=max_pages, start_date=start_date, end_date=end_date)
-    crawler.find_e_auto_articles()  # Finde Artikel zu E-Autos auf den angegebenen Seiten
-    crawler.open_articles()  # Öffne die gefundenen Artikel
+    # Fortschrittsleiste zurücksetzen
+    progress_var.set(0)
+    status_label.config(text="Crawler startet...")
+    results_text.delete(1.0, tk.END)
+
+    # Crawler in separatem Thread starten
+    def crawler_thread():
+        # Initialisiere Webcrawler
+        crawler = SpiegelCrawler(
+            base_url="https://www.spiegel.de/auto/",
+            max_articles=max_articles_int,
+            max_pages=max_pages_int,
+            start_date=start_date,
+            end_date=end_date
+        )
+        crawler.find_e_auto_articles()  # Finde Artikel zu E-Autos auf den angegebenen Seiten
+        crawler.open_articles()  # Öffne die gefundenen Artikel
+
+    threading.Thread(target=crawler_thread).start()
+
+def process_queue():
+    try:
+        while True:
+            msg = gui_queue.get_nowait()
+            if msg['type'] == 'progress':
+                progress_var.set(msg['progress'])
+                status_label.config(text=msg['text'])
+            elif msg['type'] == 'status':
+                status_label.config(text=msg['text'])
+            elif msg['type'] == 'sentiment':
+                results_text.insert(tk.END, msg['text'] + "\n")
+    except queue.Empty:
+        pass
+    root.after(100, process_queue)
 
 def load_log():
     log_file = filedialog.askopenfilename(filetypes=[("Log-Dateien", "*.log")])
@@ -180,38 +251,75 @@ def load_log():
             results_text.delete(1.0, tk.END)
             results_text.insert(tk.END, file.read())
 
-# GUI erstellen
+# Modernisiertes GUI erstellen
 root = tk.Tk()
 root.title("Spiegel E-Auto Sentimentanalyse")
+root.geometry("800x600")
+
+# Stil definieren
+style = ttk.Style()
+style.theme_use('default')
+style.configure('TLabel', font=('Arial', 12))
+style.configure('TEntry', font=('Arial', 12))
+style.configure('TButton', font=('Arial', 12))
+style.configure('Header.TLabel', font=('Arial', 16, 'bold'))
+
+# Hauptframe
+mainframe = ttk.Frame(root, padding="10 10 10 10")
+mainframe.pack(fill=tk.BOTH, expand=True)
+
+# Überschrift
+header_label = ttk.Label(mainframe, text="Spiegel E-Auto Sentimentanalyse", style='Header.TLabel')
+header_label.pack(pady=10)
+
+# Eingabefelder Frame
+input_frame = ttk.Frame(mainframe)
+input_frame.pack(pady=10)
 
 # Labels und Eingabefelder
-tk.Label(root, text="Anzahl der Artikel (max. 1000):").grid(row=0, column=0, padx=10, pady=5)
-max_articles_entry = tk.Entry(root)
-max_articles_entry.grid(row=0, column=1, padx=10, pady=5)
+ttk.Label(input_frame, text="Anzahl der Artikel (max. 1000):").grid(row=0, column=0, padx=5, pady=5, sticky=tk.E)
+max_articles_entry = ttk.Entry(input_frame)
+max_articles_entry.grid(row=0, column=1, padx=5, pady=5)
 
-tk.Label(root, text="Maximale Anzahl der Seiten (max. 500):").grid(row=1, column=0, padx=10, pady=5)
-max_pages_entry = tk.Entry(root)
-max_pages_entry.grid(row=1, column=1, padx=10, pady=5)
+ttk.Label(input_frame, text="Maximale Anzahl der Seiten (max. 500):").grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
+max_pages_entry = ttk.Entry(input_frame)
+max_pages_entry.grid(row=1, column=1, padx=5, pady=5)
 
-tk.Label(root, text="Startdatum (YYYY-MM-DD):").grid(row=2, column=0, padx=10, pady=5)
-start_date_entry = tk.Entry(root)
-start_date_entry.grid(row=2, column=1, padx=10, pady=5)
+ttk.Label(input_frame, text="Startdatum (YYYY-MM-DD):").grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
+start_date_entry = ttk.Entry(input_frame)
+start_date_entry.grid(row=2, column=1, padx=5, pady=5)
 
-tk.Label(root, text="Enddatum (YYYY-MM-DD):").grid(row=3, column=0, padx=10, pady=5)
-end_date_entry = tk.Entry(root)
-end_date_entry.grid(row=3, column=1, padx=10, pady=5)
+ttk.Label(input_frame, text="Enddatum (YYYY-MM-DD):").grid(row=3, column=0, padx=5, pady=5, sticky=tk.E)
+end_date_entry = ttk.Entry(input_frame)
+end_date_entry.grid(row=3, column=1, padx=5, pady=5)
+
+# Buttons Frame
+buttons_frame = ttk.Frame(mainframe)
+buttons_frame.pack(pady=10)
 
 # Start-Button
-start_button = tk.Button(root, text="Crawler starten", command=start_crawler)
-start_button.grid(row=4, column=0, columnspan=2, pady=10)
+start_button = ttk.Button(buttons_frame, text="Crawler starten", command=start_crawler)
+start_button.grid(row=0, column=0, padx=5)
 
 # Log laden Button
-load_log_button = tk.Button(root, text="Log-Datei laden", command=load_log)
-load_log_button.grid(row=5, column=0, columnspan=2, pady=5)
+load_log_button = ttk.Button(buttons_frame, text="Log-Datei laden", command=load_log)
+load_log_button.grid(row=0, column=1, padx=5)
+
+# Fortschrittsanzeige
+progress_var = tk.DoubleVar()
+progress_bar = ttk.Progressbar(mainframe, variable=progress_var, maximum=100)
+progress_bar.pack(pady=10, fill=tk.X)
+
+# Statuslabel
+status_label = ttk.Label(mainframe, text="")
+status_label.pack()
 
 # Ergebnisanzeige
-results_text = scrolledtext.ScrolledText(root, width=100, height=20)
-results_text.grid(row=6, column=0, columnspan=2, padx=10, pady=10)
+results_text = scrolledtext.ScrolledText(mainframe, width=80, height=20, font=('Arial', 10))
+results_text.pack(pady=10, fill=tk.BOTH, expand=True)
+
+# Starten der Queue-Verarbeitung
+root.after(100, process_queue)
 
 # GUI starten
 root.mainloop()
