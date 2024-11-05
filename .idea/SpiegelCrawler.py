@@ -17,7 +17,7 @@ import queue
 log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_erstellt.log")
 logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(message)s')
 
-# Schlüsselwörter für die Artikelsuche - einfach erweiterbar
+# Schlüsselwörter für die Artikelsuche
 keywords = [
     "elektroauto",
     "elektroautos",
@@ -31,51 +31,73 @@ keywords = [
     "e-motor",
     "batterieauto",
     "batterieautos",
-    "Autos emissionsfrei",
-    "E-Autos emissionsfrei",
-    "Autos null-emissionen",
+    "emissionsfrei",
+    "null-emissionen",
+    "stromer",
+    "e-mobil",
+    "elektrischer antrieb",
     "elektrisches fahrzeug",
     "e-fahrzeug",
     "e-fahrzeuge",
-    "elektromobil",
+    "elektromobil"
 ]
 
-# Listen mit positiven und negativen Ausdrücken - einfach erweiterbar
-positive_words = [
-    "fortschrittlich",
-    "umweltfreundlich",
-    "innovativ",
-    "positiv",
-    "effizient",
-    "zukunftsweisend",
-    "nachhaltig"
-    "komfortable"
-    "postive entwicklung"
-    "steigende Zahlen"
-    "Elektroautos günstiger"
-    "E-Autos günstiger"
-    "Recyclinganlage eröffnet"
-    "Nachfrage wächst"
-    "kaum Gefahr"
-    "weiter"
-]
+# Individuelle Wörter mit Wertungen (-1 bis 1)
+individual_words = {
+    "fortschrittlich": 0.8,
+    "umweltfreundlich": 1.0,
+    "innovativ": 0.9,
+    "positiv": 0.7,
+    "effizient": 0.8,
+    "zukunftsweisend": 0.9,
+    "nachhaltig": 1.0,
+    "teuer": -0.6,
+    "problematisch": -0.7,
+    "unzuverlässig": -0.8,
+    "kritisch": -0.5,
+    "negativ": -0.7,
+    "ineffizient": -0.8,
+    "mangelhaft": -0.9
+}
 
-negative_words = [
-    "teuer",
-    "problematisch",
-    "unzuverlässig",
-    "kritisch",
-    "negativ",
-    "ineffizient",
-    "mangelhaft"
-    "gefährlich"
-    "unmenschlich"
-    "Brand"
-    "E-Debakel"
-    "E-Auto brennt"
-    "Totalschäden"
+# Funktion zum Laden der SentiWS-Dateien
+def load_sentiws(path_positive, path_negative):
+    sentiws = {}
+    for path in [path_positive, path_negative]:
+        try:
+            with open(path, 'r', encoding='utf-8') as file:
+                for line in file:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    parts = line.split('\t')
+                    if len(parts) < 2:
+                        continue  # Unvollständige Zeile überspringen
+                    # Extrahiere Lemma und POS-Tag
+                    lemma_pos = parts[0].split('|')
+                    lemma = lemma_pos[0].lower()
+                    # POS-Tag wird nicht verwendet
+                    score = float(parts[1])
+                    # Flexionsformen verarbeiten
+                    flexions = parts[2].split(',') if len(parts) > 2 else []
+                    # Füge Lemma und Flexionsformen hinzu
+                    for word in [lemma] + flexions:
+                        word = word.lower().strip()
+                        if word:  # Leere Einträge vermeiden
+                            sentiws[word] = score
+        except FileNotFoundError:
+            messagebox.showerror("Datei nicht gefunden", f"Die Datei {path} wurde nicht gefunden. Bitte überprüfen Sie den Pfad.")
+            sys.exit()
+    return sentiws
 
-]
+# Laden der SentiWS-Listen
+script_dir = os.path.dirname(os.path.abspath(__file__))
+sentiws_path_positive = os.path.join(script_dir, 'SentiWS_v2.0_Positive.txt')
+sentiws_path_negative = os.path.join(script_dir, 'SentiWS_v2.0_Negative.txt')
+sentiws = load_sentiws(sentiws_path_positive, sentiws_path_negative)
+
+# Individuelle Wörter hinzufügen
+sentiws.update(individual_words)
 
 # Queue für Thread-Kommunikation
 gui_queue = queue.Queue()
@@ -125,7 +147,7 @@ class SpiegelCrawler:
                                             return
                                         if self.start_date <= article_date <= self.end_date:
                                             self.article_urls.append(full_url)
-                                            logging.info(f"Gefundener Artikel: {full_url.split('/auto/')[-1]}")
+                                            logging.info(f"Gefundener Artikel: {full_url}")
                                     except ValueError:
                                         continue
                     elapsed_time = time.time() - start_time
@@ -148,8 +170,7 @@ class SpiegelCrawler:
     def open_articles(self):
         gui_queue.put({'type': 'status', 'text': 'Sentimentanalyse wird durchgeführt...'})
         sentiment_results = []
-        total_positive_count = 0
-        total_negative_count = 0
+        total_score = 0
         for url in self.article_urls:
             try:
                 response = requests.get(url, timeout=10)
@@ -162,16 +183,20 @@ class SpiegelCrawler:
                     else:
                         title = 'Kein Titel'
                     body = " ".join([p.get_text(separator=' ', strip=True) for p in soup.find_all('p')])
-                    positive_count = sum(body.lower().count(word) for word in positive_words)
-                    negative_count = sum(body.lower().count(word) for word in negative_words)
-                    total_positive_count += positive_count
-                    total_negative_count += negative_count
-                    sentiment = "positiv" if positive_count > negative_count else ("negativ" if negative_count > positive_count else "neutral")
+
+                    # Sentimentanalyse
+                    words = re.findall(r'\b\w+\b', body.lower())
+                    score = 0
+                    for word in words:
+                        if word in sentiws:
+                            score += sentiws[word]
+
+                    total_score += score
+                    sentiment = "positiv" if score > 0 else ("negativ" if score < 0 else "neutral")
                     sentiment_results.append({
                         "title": title,
                         "url": url,
-                        "positive_count": positive_count,
-                        "negative_count": negative_count,
+                        "score": score,
                         "sentiment": sentiment
                     })
                 else:
@@ -181,13 +206,13 @@ class SpiegelCrawler:
 
         # Ergebnisse der Sentimentanalyse ausgeben und ins Log schreiben
         for result in sentiment_results:
-            output = f"Titel: {result['title']}\nURL: {result['url']}\nPositiv: {result['positive_count']}, Negativ: {result['negative_count']}, Sentiment: {result['sentiment']}\n"
+            output = f"Titel: {result['title']}\nURL: {result['url']}\nScore: {result['score']:.2f}, Sentiment: {result['sentiment']}\n"
             logging.info(output)
             gui_queue.put({'type': 'sentiment', 'text': output})
 
         # Gesamtergebnisse der Sentimentanalyse
-        overall_sentiment = "positiv" if total_positive_count > total_negative_count else ("negativ" if total_negative_count > total_positive_count else "neutral")
-        overall_output = f"\nGesamtanzahl positive Wörter: {total_positive_count}\nGesamtanzahl negative Wörter: {total_negative_count}\nGesamtsentiment: {overall_sentiment}\n"
+        overall_sentiment = "positiv" if total_score > 0 else ("negativ" if total_score < 0 else "neutral")
+        overall_output = f"\nGesamtscore: {total_score:.2f}\nGesamtsentiment: {overall_sentiment}\n"
         logging.info(overall_output)
         gui_queue.put({'type': 'sentiment', 'text': overall_output})
         gui_queue.put({'type': 'status', 'text': 'Vorgang abgeschlossen.'})
@@ -247,7 +272,7 @@ def process_queue():
 def load_log():
     log_file = filedialog.askopenfilename(filetypes=[("Log-Dateien", "*.log")])
     if log_file:
-        with open(log_file, "r") as file:
+        with open(log_file, "r", encoding='utf-8') as file:
             results_text.delete(1.0, tk.END)
             results_text.insert(tk.END, file.read())
 
