@@ -20,6 +20,11 @@ class SentimentAnalyzer:
         for article in articles:
             body = article['body']
 
+            # Überprüfen, ob der Artikeltext nicht leer ist
+            if not body.strip():
+                logging.warning(f"Leerer Artikeltext für Artikel: {article['url']}")
+                continue
+
             # BERT Sentimentanalyse
             sentiment_result_bert = self.sentiment_model.predict_sentiment([body], output_probabilities=True)
             sentiment_class_bert = sentiment_result_bert[0][0]  # Da wir nur einen Text analysieren
@@ -43,6 +48,7 @@ class SentimentAnalyzer:
             sentiment_results.append({
                 "title": article['title'],
                 "url": article['url'],
+                # "body": article['body'],  # Artikeltext nicht hinzufügen, um ihn nicht im Frontend anzuzeigen
                 "sentiment_bert": sentiment_class_bert,
                 "sentiment_scores_bert": sentiment_scores_bert,
                 "sentiment_gpt": sentiment_class_gpt,
@@ -96,7 +102,7 @@ class SentimentAnalyzer:
                 max_tokens=150,
                 n=1,
                 stop=None,
-                temperature=1
+                temperature=0
             )
             sentiment = response.choices[0].message['content'].strip()
             sentiment_scores_gpt = json.loads(sentiment)

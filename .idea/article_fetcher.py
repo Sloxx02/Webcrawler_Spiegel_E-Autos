@@ -42,6 +42,7 @@ class ArticleFetcher:
         return articles
 
     def extract_article_body(self, soup):
+        # Suche nach dem Hauptinhalt des Artikels
         article_body = soup.find('div', {'class': re.compile(r'Article.*Body')})
         if not article_body:
             article_body = soup.find('section', {'class': re.compile(r'Article.*Content')})
@@ -50,4 +51,5 @@ class ArticleFetcher:
             body_text = " ".join([p.get_text(separator=' ', strip=True) for p in paragraphs if p.get_text(strip=True)])
             return body_text
         else:
+            # Fallback: gesamter Text
             return soup.get_text(separator=' ', strip=True)
