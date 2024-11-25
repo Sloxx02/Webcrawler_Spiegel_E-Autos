@@ -1,6 +1,5 @@
 import requests
 from bs4 import BeautifulSoup
-import re
 import logging
 from datetime import datetime
 
@@ -35,6 +34,9 @@ class Crawler:
                             full_url = link_tag['href']
                             if not full_url.startswith('http'):
                                 full_url = 'https://www.spiegel.de' + full_url
+                            # Skip Paywall Articles
+                            if '+' in full_url:
+                                continue
                             # Titel des Artikels extrahieren
                             title_tag = article.find('h2') or article.find('h3') or article.find('h1')
                             if title_tag:
@@ -82,3 +84,17 @@ class Crawler:
         except Exception as e:
             logging.error(f"Fehler beim Abrufen des Artikeldatums von {url}: {e}")
         return None
+
+    def get_article_text(self, url):
+        try:
+            article_response = requests.get(url, timeout=5)
+            if article_response.status_code == 200:
+                article_soup = BeautifulSoup(article_response.text, 'html.parser')
+                body_elements = article_soup.find_all('div', {'data-area': 'text'})
+                body_text = " ".join([element.get_text(separator=' ', strip=True) for element in body_elements])
+                return body_text
+            else:
+                logging.error(f"Fehler beim Abrufen des Artikels: {article_response.status_code}")
+        except Exception as e:
+            logging.error(f"Fehler beim Abrufen des Artikels von {url}: {e}")
+        return "Kein Text gefunden"

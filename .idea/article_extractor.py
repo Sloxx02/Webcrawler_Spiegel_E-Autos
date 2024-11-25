@@ -1,4 +1,3 @@
-#Only for testing the Web-Crawler logic
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import threading
@@ -147,6 +146,9 @@ class ArticleExtractorApp:
                             full_url = link_tag['href']
                             if not full_url.startswith('http'):
                                 full_url = 'https://www.spiegel.de' + full_url
+                            # Skip Paywall Articles
+                            if '+' in full_url:
+                                continue
                             # Titel des Artikels extrahieren
                             title_tag = article.find('h2') or article.find('h3') or article.find('h1')
                             if title_tag:
@@ -223,15 +225,9 @@ class ArticleExtractorApp:
         return articles
 
     def extract_article_body(self, soup):
-        article_body = soup.find('div', {'class': re.compile(r'Article.*Body')})
-        if not article_body:
-            article_body = soup.find('section', {'class': re.compile(r'Article.*Content')})
-        if article_body:
-            paragraphs = article_body.find_all('p')
-            body_text = " ".join([p.get_text(separator=' ', strip=True) for p in paragraphs if p.get_text(strip=True)])
-            return body_text
-        else:
-            return soup.get_text(separator=' ', strip=True)
+        body_elements = soup.find_all('div', {'data-area': 'text'})
+        body_text = " ".join([element.get_text(separator=' ', strip=True) for element in body_elements])
+        return body_text
 
     def process_queue(self):
         try:
